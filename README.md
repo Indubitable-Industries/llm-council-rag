@@ -1,6 +1,13 @@
-# LLM Council
+# LLM Council (Local RAG + manual context fork)
 
 ![llmcouncil](header.jpg)
+
+This fork adds a practical RAG workflow on top of the original council app:
+
+- **Local LM Studio retrieval:** Embed with `text-embedding-nomic-embed-text-v1.5`, rerank with `text-embedding-bge-reranker-large`, neighbor expansion, and a configurable cap.
+- **Manual context controls:** Repo tree picker, `@file:` / `@token` directives, and manual context that bypasses RAG when present.
+- **Context clarity:** High-contrast context panel (collapsible by default) with unique file/line summary, scores, and manual vs RAG tags.
+- **UX helpers:** Stop button to abort streaming, scroll-to-bottom shortcut, upload status that shows indexing, and a CLI to preview context (`python -m backend.cli_context ...`).
 
 The idea of this repo is that instead of asking a question to your favorite LLM provider (e.g. OpenAI GPT 5.1, Google Gemini 3.0 Pro, Anthropic Claude Sonnet 4.5, xAI Grok 4, eg.c), you can group them into your "LLM Council". This repo is a simple, local web app that essentially looks like ChatGPT except it uses OpenRouter to send your query to multiple LLMs, it then asks them to review and rank each other's work, and finally a Chairman LLM produces the final response.
 
@@ -34,10 +41,17 @@ cd ..
 
 ### 2. Configure API Key
 
-Create a `.env` file in the project root:
+Create a `.env` file in the project root (see `.env.example`):
 
 ```bash
 OPENROUTER_API_KEY=sk-or-v1-...
+LMSTUDIO_BASE_URL=http://localhost:1234/v1
+LMSTUDIO_EMBED_MODEL=text-embedding-nomic-embed-text-v1.5
+LMSTUDIO_RERANK_MODEL=text-embedding-bge-reranker-large
+RERANK_ENABLED=true
+RETRIEVE_CANDIDATES=50
+RERANK_TOP_K=20
+CONTEXT_CHUNK_CAP=60
 ```
 
 Get your API key at [openrouter.ai](https://openrouter.ai/). Make sure to purchase the credits you need, or sign up for automatic top up.
@@ -78,6 +92,23 @@ npm run dev
 ```
 
 Then open http://localhost:5173 in your browser.
+
+### 4. Using local RAG and manual context
+
+- Upload a repo ZIP in the chat UI (per conversation). The picker loads once indexing finishes.
+- Manual context (picker or `@file:` / `@token`) bypasses RAG for that message. Automatic RAG uses FAISS top-N → rerank to top-K with neighbor expansion and injects a guidance note asking models to flag missing context.
+- Context panel (collapsible) shows unique file count, line totals, scores, and manual vs RAG tags. Full manual files are summarized by name; snippets and RAG chunks show content.
+- Abort a response with “Stop”; use the scroll-to-bottom button when you’ve scrolled up.
+
+### 5. Inspect context from the CLI
+
+Preview what context would be sent for a query:
+
+```bash
+python -m backend.cli_context --conversation <id> --query "How do we start the server?"
+# You can force files without RAG:
+python -m backend.cli_context --conversation <any> --query "..." --manual-file backend/main.py
+```
 
 ## Tech Stack
 

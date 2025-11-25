@@ -4,7 +4,9 @@ import logging
 import os
 import zipfile
 from pathlib import Path
-from typing import Dict, List, Tuple, Any
+from typing import Dict, List, Tuple, Any, Optional
+import math
+import httpx
 
 from langchain_community.document_loaders import TextLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
@@ -12,14 +14,21 @@ from langchain_openai import OpenAIEmbeddings
 from langchain_community.vectorstores import FAISS
 from langchain_core.documents import Document
 
+from .config import (
+    LMSTUDIO_BASE_URL,
+    LMSTUDIO_EMBED_MODEL,
+    LMSTUDIO_RERANK_MODEL,
+    RERANK_ENABLED,
+    RETRIEVE_CANDIDATES,
+    RERANK_TOP_K,
+    CONTEXT_CHUNK_CAP,
+)
+
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
 
 logger = logging.getLogger(__name__)
-
-LMSTUDIO_BASE_URL = os.getenv("LMSTUDIO_BASE_URL", "http://localhost:1234/v1")
-LMSTUDIO_EMBED_MODEL = os.getenv("LMSTUDIO_EMBED_MODEL", "nomic-embed-text-v1.5")
 
 # Directories we don't want to index (big junk, IDE stuff, etc.)
 SKIP_DIR_NAMES = {
@@ -113,6 +122,15 @@ def index_repo_zip(zip_path: str, convo_id: str) -> str:
     )
 
     chunks = splitter.split_documents(docs)
+
+    # Assign per-file chunk indices and doc ids for later neighbor lookup
+    per_file_counts: Dict[str, int] = {}
+    for chunk in chunks:
+        src = chunk.metadata.get("source", "unknown")
+        idx = per_file_counts.get(src, 0)
+        chunk.metadata["doc_id"] = src
+        chunk.metadata["chunk_index"] = idx
+        per_file_counts[src] = idx + 1
 
     # Ensure we only send clean strings to the embed endpoint
     safe_chunks: List[Document] = []
@@ -223,57 +241,265 @@ def _lazy_load_vectorstore(convo_id: str) -> FAISS | None:
         return None
 
 
-def get_rag_context(convo_id: str, query: str, k: int = 6) -> Tuple[str, List[Dict[str, Any]]]:
-    """
-    Retrieve top-k relevant chunks for a given query and convo_id.
-    Returns a markdown-formatted string you can prepend to the user question,
-    plus a metadata list describing the sources.
-    """
+def _estimate_tokens(text: str) -> int:
+    # Quick heuristic: 4 chars per token
+    return max(1, len(text) // 4)
+
+
+def _doc_lookup_by_chunk(vs: FAISS) -> Dict[tuple, Document]:
+    try:
+        store = vs.docstore._dict  # type: ignore[attr-defined]
+    except Exception:
+        return {}
+
+    lookup: Dict[tuple, Document] = {}
+    for doc in store.values():
+        meta = doc.metadata or {}
+        doc_id = meta.get("doc_id")
+        chunk_idx = meta.get("chunk_index")
+        if doc_id is None or chunk_idx is None:
+            continue
+        lookup[(doc_id, chunk_idx)] = doc
+    return lookup
+
+
+def _compute_cosine(a: List[float], b: List[float]) -> float:
+    dot = 0.0
+    norm_a = 0.0
+    norm_b = 0.0
+    for x, y in zip(a, b):
+        dot += x * y
+        norm_a += x * x
+        norm_b += y * y
+    if norm_a == 0 or norm_b == 0:
+        return 0.0
+    return dot / (math.sqrt(norm_a) * math.sqrt(norm_b))
+
+
+def retrieve_candidates(convo_id: str, query: str, n: int) -> List[Document]:
     vs = _lazy_load_vectorstore(convo_id)
     if vs is None:
-        return "", []  # no repo yet; let council behave normally
+        return []
 
     retriever = vs.as_retriever(
-        search_kwargs={"k": k, "score_threshold": 0.68},
+        search_kwargs={"k": n},
     )
     docs = retriever.invoke(query)
+    return docs or []
 
+
+def rerank_with_bge(query: str, docs: List[Document]) -> List[tuple]:
     if not docs:
-        return "", []  # nothing good enough
+        return []
 
-    sources_meta: List[Dict[str, Any]] = []
-    total_chars = 0
-    for d in docs:
-        content = d.page_content or ""
-        total_chars += len(content)
-        sources_meta.append(
-            {
-                "source": d.metadata.get("source", "unknown"),
-                "lines": content.count("\n") + 1 if content else 0,
-                "chars": len(content),
-            }
+    url = f"{LMSTUDIO_BASE_URL.rstrip('/')}/embeddings"
+    payload = {
+        "model": LMSTUDIO_RERANK_MODEL,
+        "input": [query] + [d.page_content for d in docs],
+    }
+
+    try:
+        resp = httpx.post(url, json=payload, timeout=30.0)
+        resp.raise_for_status()
+        data = resp.json().get("data", [])
+    except Exception:
+        logger.exception("Rerank call failed")
+        return [(doc, None) for doc in docs]
+
+    if len(data) != len(docs) + 1:
+        return [(doc, None) for doc in docs]
+
+    query_vec = data[0].get("embedding", [])
+    doc_vecs = [item.get("embedding", []) for item in data[1:]]
+
+    scores: List[float] = []
+    for vec in doc_vecs:
+        scores.append(_compute_cosine(query_vec, vec))
+
+    ranked = sorted(zip(docs, scores), key=lambda x: (x[1] is not None, x[1]), reverse=True)
+    return ranked
+
+
+def expand_with_neighbors(vs: FAISS, ranked_docs: List[tuple]) -> List[tuple]:
+    if not ranked_docs:
+        return []
+
+    lookup = _doc_lookup_by_chunk(vs)
+    seen = set()
+    expanded: List[tuple] = []
+
+    def add_entry(doc: Document, score: Optional[float]):
+        key = (
+            doc.metadata.get("doc_id"),
+            doc.metadata.get("chunk_index"),
         )
+        if key in seen:
+            return
+        seen.add(key)
+        expanded.append((doc, score))
 
+    for doc, score in ranked_docs:
+        add_entry(doc, score)
+
+        doc_id = doc.metadata.get("doc_id")
+        chunk_idx = doc.metadata.get("chunk_index")
+        if doc_id is None or chunk_idx is None:
+            continue
+
+        prev_key = (doc_id, chunk_idx - 1)
+        next_key = (doc_id, chunk_idx + 1)
+        if prev_key in lookup:
+            add_entry(lookup[prev_key], score)
+        if next_key in lookup:
+            add_entry(lookup[next_key], score)
+
+    return expanded
+
+
+def retrieve_reranked(convo_id: str, query: str) -> List[tuple]:
+    vs = _lazy_load_vectorstore(convo_id)
+    if vs is None:
+        return []
+
+    candidates = retrieve_candidates(convo_id, query, RETRIEVE_CANDIDATES)
+    if not candidates:
+        return []
+
+    if RERANK_ENABLED:
+        ranked = rerank_with_bge(query, candidates)
+    else:
+        ranked = [(doc, None) for doc in candidates]
+
+    ranked = ranked[: RERANK_TOP_K]
+    ranked_with_neighbors = expand_with_neighbors(vs, ranked)
+
+    if len(ranked_with_neighbors) > CONTEXT_CHUNK_CAP:
+        ranked_with_neighbors = ranked_with_neighbors[:CONTEXT_CHUNK_CAP]
+
+    return ranked_with_neighbors
+
+
+def _context_entry_from_doc(doc: Document, score: Optional[float]) -> Dict[str, Any]:
+    content = (doc.page_content or "").strip()
+    meta = doc.metadata or {}
+    return {
+        "source": meta.get("source") or meta.get("doc_id") or "unknown",
+        "doc_id": meta.get("doc_id"),
+        "chunk_index": meta.get("chunk_index"),
+        "score": score,
+        "content": content,
+        "lines": content.count("\n") + 1 if content else 0,
+        "chars": len(content),
+        "bytes": len(content.encode("utf-8", errors="ignore")),
+        "est_tokens": _estimate_tokens(content),
+        "source_type": "rag",
+    }
+
+
+def _context_text_block(entries: List[Dict[str, Any]], header: str) -> str:
+    lines: List[str] = [header, ""]
+    for entry in entries:
+        source = entry.get("source", "unknown")
+        body = entry.get("content", "").strip()
+        lines.append(f"--- {source} ---")
+        lines.append(body)
+        lines.append("")
+    return "\n".join(lines).strip() + "\n"
+
+
+def build_rag_context(convo_id: str, query: str) -> Tuple[str, List[Dict[str, Any]]]:
+    ranked_with_neighbors = retrieve_reranked(convo_id, query)
+    if not ranked_with_neighbors:
+        return "", []
+
+    entries = [_context_entry_from_doc(doc, score) for doc, score in ranked_with_neighbors]
+
+    total_chars = sum(e["chars"] for e in entries)
     logger.info(
         (
-            "RAG retrieved %d docs "
-            "(convo=%s query_len=%d total_chars=%d sources=%s)"
+            "RAG retrieved %d docs (convo=%s query_len=%d total_chars=%d top=%s)"
         ),
-        len(docs),
+        len(entries),
         convo_id,
         len(query or ""),
         total_chars,
-        [m["source"] for m in sources_meta],
+        [e.get("source") for e in entries[:5]],
     )
 
-    lines: List[str] = [
-        "# Relevant repository context (local LM Studio RAG)\n",
-    ]
+    context_text = _context_text_block(entries, "# Relevant repository context (local LM Studio RAG)")
+    return context_text, entries
 
-    for d in docs:
-        source = d.metadata.get("source", "unknown")
-        lines.append(f"--- {source} ---")
-        lines.append(d.page_content.strip())
-        lines.append("")  # blank line between docs
 
-    return "\n".join(lines).strip() + "\n", sources_meta
+def build_manual_context(manual_items: List[Dict[str, Any]]) -> Tuple[str, List[Dict[str, Any]]]:
+    if not manual_items:
+        return "", []
+
+    entries: List[Dict[str, Any]] = []
+    for item in manual_items:
+        content = (item.get("content") or "").strip()
+        src = item.get("path") or item.get("source") or "manual"
+        entry = {
+            "source": src,
+            "doc_id": src,
+            "chunk_index": None,
+            "score": item.get("score"),
+            "content": content,
+            "lines": content.count("\n") + 1 if content else 0,
+            "chars": len(content),
+            "bytes": len(content.encode("utf-8", errors="ignore")),
+            "est_tokens": _estimate_tokens(content),
+            "source_type": item.get("source_type", "manual"),
+        }
+        entries.append(entry)
+
+    header = "# Manually selected context"
+    context_text = _context_text_block(entries, header)
+    total_bytes = sum(e["bytes"] for e in entries)
+    total_tokens = sum(e["est_tokens"] for e in entries)
+    logger.info(
+        "Manual context used (items=%d bytes=%d est_tokens=%d sources=%s)",
+        len(entries),
+        total_bytes,
+        total_tokens,
+        [e.get("source") for e in entries],
+    )
+    return context_text, entries
+
+
+def rank_paths_against_query(paths: List[Path], query: str) -> List[Tuple[Path, float]]:
+    """Rank candidate file paths against the query using the embed model.
+
+    If embedding fails, falls back to path-length heuristic.
+    """
+    if not paths:
+        return []
+
+    try:
+        query_vec = embeddings.embed_query(query)
+        contents: List[str] = []
+        for p in paths:
+            try:
+                text = p.read_text(encoding="utf-8", errors="ignore")
+            except Exception:
+                text = ""
+            if len(text) > 4000:
+                text = text[:4000]
+            contents.append(text)
+
+        doc_vecs = embeddings.embed_documents(contents)
+        ranked = []
+        for path_obj, vec in zip(paths, doc_vecs):
+            score = _compute_cosine(query_vec, vec)
+            ranked.append((path_obj, score))
+        ranked.sort(key=lambda x: x[1], reverse=True)
+        return ranked
+    except Exception:
+        logger.exception("Failed to rank paths; falling back to heuristic")
+        return sorted([(p, 0.0) for p in paths], key=lambda x: len(str(x[0])))
+
+
+def get_context(convo_id: str, query: str, manual_items: Optional[List[Dict[str, Any]]] = None) -> Tuple[str, List[Dict[str, Any]]]:
+    if manual_items:
+        return build_manual_context(manual_items)
+
+    return build_rag_context(convo_id, query)

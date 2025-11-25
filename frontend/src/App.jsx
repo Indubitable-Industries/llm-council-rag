@@ -9,6 +9,7 @@ function App() {
   const [currentConversationId, setCurrentConversationId] = useState(null);
   const [currentConversation, setCurrentConversation] = useState(null);
   const [isLoading, setIsLoading] = useState(false);
+  const [abortCtrl, setAbortCtrl] = useState(null);
 
   // Load conversations on mount
   useEffect(() => {
@@ -57,10 +58,12 @@ function App() {
     setCurrentConversationId(id);
   };
 
-  const handleSendMessage = async (content) => {
+  const handleSendMessage = async (content, manualContext = []) => {
     if (!currentConversationId) return;
 
     setIsLoading(true);
+    const controller = new AbortController();
+    setAbortCtrl(controller);
     try {
       // Optimistically add user message to UI
       const userMessage = { role: 'user', content };
@@ -76,7 +79,7 @@ function App() {
         stage2: null,
         stage3: null,
         metadata: null,
-        ragContextSources: null,
+        contextSources: null,
         loading: {
           stage1: false,
           stage2: false,
@@ -91,7 +94,7 @@ function App() {
       }));
 
       // Send message with streaming
-      await api.sendMessageStream(currentConversationId, content, (eventType, event) => {
+      await api.sendMessageStream(currentConversationId, content, manualContext, (eventType, event) => {
         switch (eventType) {
           case 'stage1_start':
             setCurrentConversation((prev) => {
@@ -155,7 +158,7 @@ function App() {
             setCurrentConversation((prev) => {
               const messages = [...prev.messages];
               const lastMsg = messages[messages.length - 1];
-              lastMsg.ragContextSources = event.data || [];
+              lastMsg.contextSources = event.data || [];
               return { ...prev, messages };
             });
             break;
@@ -179,16 +182,47 @@ function App() {
           default:
             console.log('Unknown event type:', eventType);
         }
-      });
+      }, controller.signal);
     } catch (error) {
-      console.error('Failed to send message:', error);
-      // Remove optimistic messages on error
-      setCurrentConversation((prev) => ({
-        ...prev,
-        messages: prev.messages.slice(0, -2),
-      }));
-      setIsLoading(false);
+      if (error.name === 'AbortError') {
+        // Remove the partial assistant message and keep the user message.
+        setCurrentConversation((prev) => {
+          const messages = [...prev.messages];
+          if (messages[messages.length - 1]?.role === 'assistant') {
+            messages.pop();
+          }
+          return { ...prev, messages };
+        });
+      } else {
+        console.error('Failed to send message:', error);
+        // Remove optimistic messages on error
+        setCurrentConversation((prev) => ({
+          ...prev,
+          messages: prev.messages.slice(0, -2),
+        }));
+      }
     }
+    finally {
+      setIsLoading(false);
+      setAbortCtrl(null);
+    }
+  };
+
+  const handleStopStreaming = () => {
+    if (abortCtrl) {
+      abortCtrl.abort();
+    }
+    setAbortCtrl(null);
+    setIsLoading(false);
+    // Remove partial assistant message if present
+    setCurrentConversation((prev) => {
+      if (!prev) return prev;
+      const messages = [...prev.messages];
+      if (messages[messages.length - 1]?.role === 'assistant') {
+        messages.pop();
+      }
+      return { ...prev, messages };
+    });
   };
 
   return (
@@ -202,6 +236,7 @@ function App() {
       <ChatInterface
         conversation={currentConversation}
         onSendMessage={handleSendMessage}
+        onStop={handleStopStreaming}
         isLoading={isLoading}
       />
     </div>

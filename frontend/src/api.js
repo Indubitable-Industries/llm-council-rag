@@ -51,7 +51,7 @@ export const api = {
   /**
    * Send a message in a conversation.
    */
-  async sendMessage(conversationId, content) {
+  async sendMessage(conversationId, content, manualContext = []) {
     const response = await fetch(
       `${API_BASE}/api/conversations/${conversationId}/message`,
       {
@@ -59,7 +59,7 @@ export const api = {
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ content }),
+        body: JSON.stringify({ content, manual_context: manualContext }),
       }
     );
     if (!response.ok) {
@@ -75,7 +75,7 @@ export const api = {
    * @param {function} onEvent - Callback function for each event: (eventType, data) => void
    * @returns {Promise<void>}
    */
-  async sendMessageStream(conversationId, content, onEvent) {
+  async sendMessageStream(conversationId, content, manualContext = [], onEvent, signal) {
     const response = await fetch(
       `${API_BASE}/api/conversations/${conversationId}/message/stream`,
       {
@@ -83,7 +83,8 @@ export const api = {
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ content }),
+        body: JSON.stringify({ content, manual_context: manualContext }),
+        signal,
       }
     );
 
@@ -148,5 +149,43 @@ export const api = {
     }
 
     return data;
+  },
+
+  async getRepoTree(conversationId) {
+    const response = await fetch(`${API_BASE}/api/conversations/${conversationId}/repo_tree`);
+    if (!response.ok) {
+      throw new Error('Failed to load repo tree');
+    }
+    return response.json();
+  },
+
+  async getFile(conversationId, path) {
+    const response = await fetch(
+      `${API_BASE}/api/conversations/${conversationId}/file?path=${encodeURIComponent(path)}`
+    );
+    if (!response.ok) {
+      throw new Error('Failed to load file');
+    }
+    return response.json();
+  },
+
+  async resolvePath(conversationId, query, userQuery = '') {
+    const response = await fetch(
+      `${API_BASE}/api/conversations/${conversationId}/resolve_path?q=${encodeURIComponent(query)}&user_query=${encodeURIComponent(userQuery)}`
+    );
+    if (!response.ok) {
+      throw new Error('Failed to resolve path');
+    }
+    return response.json();
+  },
+
+  async searchRepo(conversationId, query, limit = 3) {
+    const response = await fetch(
+      `${API_BASE}/api/conversations/${conversationId}/search?q=${encodeURIComponent(query)}&limit=${limit}`
+    );
+    if (!response.ok) {
+      throw new Error('Failed to search repo');
+    }
+    return response.json();
   },
 };

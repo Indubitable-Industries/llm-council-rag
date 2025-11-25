@@ -8,8 +8,8 @@
 
 .messages-container {
   flex: 1;
-  overflow-y: auto;
   padding: 24px;
+  overflow-y: auto;
 }
 
 .empty-state {
@@ -71,6 +71,41 @@
   font-size: 14px;
 }
 
+.scroll-bottom {
+  position: fixed;
+  right: 24px;
+  bottom: 100px;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  border: 1px solid #444;
+  background: #222;
+  color: #f0f0f0;
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.2);
+  cursor: pointer;
+  font-size: 18px;
+  line-height: 1;
+}
+
+.scroll-bottom:hover {
+  background: #111;
+}
+
+.stop-button {
+  margin-left: auto;
+  padding: 8px 12px;
+  border-radius: 8px;
+  border: 1px solid #d9534f;
+  background: #d9534f;
+  color: #fff;
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.stop-button:hover {
+  background: #c64541;
+}
+
 .stage-loading {
   display: flex;
   align-items: center;
@@ -88,6 +123,15 @@
 .spinner {
   width: 20px;
   height: 20px;
+  border: 2px solid #e0e0e0;
+  border-top-color: #4a90e2;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+.tiny-spinner {
+  width: 14px;
+  height: 14px;
   border: 2px solid #e0e0e0;
   border-top-color: #4a90e2;
   border-radius: 50%;
@@ -160,4 +204,200 @@
   cursor: not-allowed;
   background: #ccc;
   border-color: #ccc;
+}
+
+.context-tools {
+  border: 1px solid #ddd;
+  border-radius: 10px;
+  padding: 12px;
+  margin: 0 24px 16px 24px;
+  background: #f8f8f8;
+}
+
+.context-tools-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.context-tools-title {
+  font-weight: 700;
+  font-size: 15px;
+  color: #222;
+}
+
+.context-tools-subtitle {
+  font-size: 13px;
+  color: #555;
+}
+
+.context-toggle {
+  border: 1px solid #999;
+  background: #222;
+  color: #f0f0f0;
+  border-radius: 8px;
+  padding: 6px 12px;
+  cursor: pointer;
+}
+
+.context-picker {
+  margin-top: 10px;
+  display: grid;
+  grid-template-columns: 1.2fr 1fr;
+  gap: 12px;
+}
+
+.repo-tree {
+  max-height: 260px;
+  overflow-y: auto;
+  border: 1px solid #ccc;
+  border-radius: 8px;
+  padding: 8px;
+  background: #fff;
+  font-size: 14px;
+}
+
+.repo-tree-children {
+  padding-left: 12px;
+}
+
+.repo-tree-file {
+  padding: 3px 6px;
+  cursor: pointer;
+  border-radius: 6px;
+}
+
+.repo-tree-file:hover {
+  background: #e8e8e8;
+}
+
+.repo-tree-empty {
+  color: #777;
+  font-size: 13px;
+}
+
+.selected-context {
+  border: 1px solid #ccc;
+  border-radius: 8px;
+  padding: 8px;
+  background: #fff;
+  min-height: 100px;
+}
+
+.selected-context-title {
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+
+.selected-context-empty {
+  color: #777;
+  font-size: 13px;
+}
+
+.selected-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: #222;
+  color: #f0f0f0;
+  font-size: 12px;
+  margin: 4px 4px 0 0;
+}
+
+.chip-path {
+  font-family: monospace;
+}
+
+.chip-remove {
+  background: transparent;
+  color: #f0f0f0;
+  border: none;
+  cursor: pointer;
+  font-size: 14px;
+}
+
+.context-panel {
+  margin-top: 10px;
+  padding: 10px;
+  border-radius: 8px;
+  border: 1px solid #555;
+  background: #222;
+  color: #f0f0f0;
+  font-size: 0.9rem;
+}
+
+.context-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  cursor: pointer;
+  padding: 4px 0;
+}
+
+.context-toggle-indicator {
+  color: #9dd2ff;
+  font-weight: 600;
+}
+
+.context-title {
+  font-weight: 700;
+  margin-bottom: 6px;
+}
+
+.context-section-title {
+  font-weight: 600;
+  margin-top: 8px;
+  margin-bottom: 4px;
+}
+
+.context-row {
+  margin-bottom: 6px;
+  padding: 6px;
+  border-radius: 6px;
+  background: #2b2b2b;
+}
+
+.context-row-header {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 4px;
+}
+
+.context-tag {
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: #444;
+  color: #f0f0f0;
+  font-size: 12px;
+}
+
+.context-path {
+  font-family: monospace;
+  color: #e0e0e0;
+}
+
+.context-score {
+  color: #9dd2ff;
+  font-size: 12px;
+}
+
+.context-meta {
+  color: #cfcfcf;
+  font-size: 12px;
+}
+
+.context-preview {
+  font-family: monospace;
+  white-space: pre-wrap;
+  color: #e8e8e8;
+}
+
+.context-preview.muted {
+  color: #c0c0c0;
+  font-style: italic;
 }
