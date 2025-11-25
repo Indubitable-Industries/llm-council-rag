@@ -1,6 +1,13 @@
 # RAG Fork
-We forked the original project to add a RAG for automatic code context additions.
+We forked the original LLM Council project to add a RAG for automatic code context additions.
 Other features included as well - see the alpha release.
+All credit the original author for putting together a tool I've always wanted and feared I'd have to build from scratch myself.
+
+Using this for large codebase context works very if prompts aren't massive and covering too many topics.
+
+Improvements for later:
+- Voting vs Fighting (with iteration)
+- RAG that will understand and follow the flow of the code some, potentially summarizing functions, but pulling more complete context.
 
 
 # LLM Council
