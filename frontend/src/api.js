@@ -2,7 +2,9 @@
  * API client for the LLM Council backend.
  */
 
-const API_BASE = 'http://localhost:8001';
+// Allow overriding the backend URL via Vite env; default to local dev backend.
+export const API_BASE =
+  import.meta.env.VITE_API_BASE || 'http://localhost:8001';
 
 export const api = {
   /**
@@ -111,5 +113,40 @@ export const api = {
         }
       }
     }
+  },
+
+  /**
+   * Upload and index a repository ZIP for a conversation.
+   */
+  async uploadRepo(conversationId, file) {
+    const formData = new FormData();
+    formData.append('file', file);
+
+    const response = await fetch(
+      `${API_BASE}/api/conversations/${conversationId}/upload_repo`,
+      {
+        method: 'POST',
+        body: formData,
+      }
+    );
+
+    const contentType = response.headers.get('content-type') || '';
+    let data;
+
+    // Prefer JSON payloads; fall back to text so we surface meaningful errors.
+    if (contentType.includes('application/json')) {
+      data = await response.json();
+    } else {
+      const text = await response.text();
+      throw new Error(
+        text || `Upload failed with status ${response.status}`
+      );
+    }
+
+    if (!response.ok) {
+      throw new Error(data?.message || 'Upload failed');
+    }
+
+    return data;
   },
 };

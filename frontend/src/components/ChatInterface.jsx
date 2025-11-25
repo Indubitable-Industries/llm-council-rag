@@ -1,9 +1,127 @@
 import { useState, useEffect, useRef } from 'react';
+import { useDropzone } from 'react-dropzone';
 import ReactMarkdown from 'react-markdown';
+import { api } from '../api';
 import Stage1 from './Stage1';
 import Stage2 from './Stage2';
 import Stage3 from './Stage3';
 import './ChatInterface.css';
+
+function RepoDropzone({ conversationId }) {
+  const [status, setStatus] = useState(null);
+  const [progress, setProgress] = useState(0);
+  const [isUploading, setIsUploading] = useState(false);
+  const progressTimer = useRef(null);
+
+  const onDrop = async (acceptedFiles) => {
+    const file = acceptedFiles[0];
+    if (!file) return;
+
+    if (!file.name.toLowerCase().endsWith('.zip')) {
+      setStatus('Please drop a .zip file.');
+      return;
+    }
+
+    setStatus('Uploading and indexing repo…');
+    setIsUploading(true);
+    setProgress(5);
+
+    if (progressTimer.current) clearInterval(progressTimer.current);
+    progressTimer.current = setInterval(() => {
+      setProgress((p) => {
+        if (p >= 90) return 90;
+        return p + 5;
+      });
+    }, 200);
+
+    try {
+      const data = await api.uploadRepo(conversationId, file);
+      if (data.status === 'success') {
+        setStatus(data.message || 'Repository indexed successfully.');
+      } else {
+        setStatus(data.message || 'Indexing failed.');
+      }
+      setProgress(100);
+    } catch (err) {
+      console.error(err);
+      setStatus(err.message || 'Upload failed. Check backend logs.');
+      setProgress(0);
+    }
+
+    if (progressTimer.current) {
+      clearInterval(progressTimer.current);
+      progressTimer.current = null;
+    }
+    setIsUploading(false);
+  };
+
+  const { getRootProps, getInputProps, isDragActive } = useDropzone({ onDrop });
+
+  useEffect(() => {
+    return () => {
+      if (progressTimer.current) clearInterval(progressTimer.current);
+    };
+  }, []);
+
+  return (
+    <div className="repo-dropzone-wrapper">
+      <div
+        {...getRootProps()}
+        className="repo-dropzone"
+        style={{
+          border: '2px dashed #555',
+          borderRadius: '0.5rem',
+          padding: '0.75rem',
+          fontSize: '0.85rem',
+          cursor: 'pointer',
+          marginBottom: '0.75rem',
+          backgroundColor: isDragActive ? '#1f1f1f' : 'transparent',
+        }}
+      >
+        <input {...getInputProps()} />
+        {isDragActive ? (
+          <span>Drop your repo .zip here…</span>
+        ) : (
+          <span>
+            Drag &amp; drop a repo <code>.zip</code> here to give the council local
+            code context for this conversation.
+          </span>
+        )}
+      </div>
+      {status && (
+        <div
+          style={{
+            fontSize: '0.8rem',
+            marginTop: '0.25rem',
+            opacity: 0.9,
+          }}
+        >
+          {status}
+        </div>
+      )}
+      {(isUploading || progress > 0) && (
+        <div
+          style={{
+            marginTop: '0.35rem',
+            background: '#2a2a2a',
+            borderRadius: '0.35rem',
+            overflow: 'hidden',
+            height: '6px',
+          }}
+        >
+          <div
+            style={{
+              width: `${progress}%`,
+              transition: 'width 0.2s ease',
+              background: '#4caf50',
+              height: '100%',
+            }}
+          />
+        </div>
+      )}
+    </div>
+  );
+}
 
 export default function ChatInterface({
   conversation,
@@ -50,6 +168,9 @@ export default function ChatInterface({
 
   return (
     <div className="chat-interface">
+      {/* New: repo dropzone for this conversation */}
+      <RepoDropzone conversationId={conversation.id} />
+
       <div className="messages-container">
         {conversation.messages.length === 0 ? (
           <div className="empty-state">
@@ -76,7 +197,9 @@ export default function ChatInterface({
                   {msg.loading?.stage1 && (
                     <div className="stage-loading">
                       <div className="spinner"></div>
-                      <span>Running Stage 1: Collecting individual responses...</span>
+                      <span>
+                        Running Stage 1: Collecting individual responses...
+                      </span>
                     </div>
                   )}
                   {msg.stage1 && <Stage1 responses={msg.stage1} />}
@@ -104,6 +227,31 @@ export default function ChatInterface({
                     </div>
                   )}
                   {msg.stage3 && <Stage3 finalResponse={msg.stage3} />}
+
+                  {msg.ragContextSources?.length > 0 && (
+                    <div
+                      style={{
+                        marginTop: '0.5rem',
+                        padding: '0.5rem',
+                        border: '1px solid #333',
+                        borderRadius: '0.35rem',
+                        fontSize: '0.85rem',
+                        background: '#151515',
+                      }}
+                    >
+                      <div style={{ fontWeight: 600, marginBottom: '0.25rem' }}>
+                        Context used:
+                      </div>
+                      <ul style={{ paddingLeft: '1.1rem', margin: 0 }}>
+                        {msg.ragContextSources.map((src, i) => (
+                          <li key={i} style={{ marginBottom: '0.15rem' }}>
+                            <code>{src.source}</code>
+                            {src.lines ? ` — ${src.lines} lines` : ''}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
                 </div>
               )}
             </div>

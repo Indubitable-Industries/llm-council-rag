@@ -76,6 +76,7 @@ function App() {
         stage2: null,
         stage3: null,
         metadata: null,
+        ragContextSources: null,
         loading: {
           stage1: false,
           stage2: false,
@@ -146,6 +147,15 @@ function App() {
               const lastMsg = messages[messages.length - 1];
               lastMsg.stage3 = event.data;
               lastMsg.loading.stage3 = false;
+              return { ...prev, messages };
+            });
+            break;
+
+          case 'rag_context':
+            setCurrentConversation((prev) => {
+              const messages = [...prev.messages];
+              const lastMsg = messages[messages.length - 1];
+              lastMsg.ragContextSources = event.data || [];
               return { ...prev, messages };
             });
             break;
