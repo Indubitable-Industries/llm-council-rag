@@ -1,3 +1,8 @@
+# RAG Fork
+We forked the original project to add a RAG for automatic code context additions.
+Other features included as well - see the alpha release.
+
+
 # LLM Council
 
 ![llmcouncil](header.jpg)
