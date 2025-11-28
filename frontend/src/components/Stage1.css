@@ -57,6 +57,20 @@
   font-size: 12px;
   margin-bottom: 12px;
   font-family: monospace;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.role-tag {
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: #eef5ff;
+  border: 1px solid #c7ddff;
+  color: #2a3f6b;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: lowercase;
 }
 
 .response-text {

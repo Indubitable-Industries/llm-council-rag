@@ -14,7 +14,7 @@ function deAnonymizeText(text, labelToModel) {
   return result;
 }
 
-export default function Stage2({ rankings, labelToModel, aggregateRankings }) {
+export default function Stage2({ rankings, labelToModel, aggregateRankings, onSelectModel }) {
   const [activeTab, setActiveTab] = useState(0);
 
   if (!rankings || rankings.length === 0) {
@@ -78,7 +78,12 @@ export default function Stage2({ rankings, labelToModel, aggregateRankings }) {
           </p>
           <div className="aggregate-list">
             {aggregateRankings.map((agg, index) => (
-              <div key={index} className="aggregate-item">
+              <div
+                key={index}
+                className="aggregate-item"
+                onClick={() => onSelectModel && onSelectModel(agg.model)}
+                role="button"
+              >
                 <span className="rank-position">#{index + 1}</span>
                 <span className="rank-model">
                   {agg.model.split('/')[1] || agg.model}

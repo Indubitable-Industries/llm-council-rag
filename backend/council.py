@@ -1,11 +1,16 @@
 """3-stage LLM Council orchestration."""
 
-from typing import List, Dict, Any, Tuple
+import asyncio
+from typing import List, Dict, Any, Tuple, Optional, Callable
 from .openrouter import query_models_parallel, query_model
 from .config import COUNCIL_MODELS, CHAIRMAN_MODEL
 
 
-async def stage1_collect_responses(user_query: str) -> List[Dict[str, Any]]:
+async def stage1_collect_responses(
+    user_query: str,
+    per_model_prompts: Optional[Dict[str, str]] = None,
+    council_models: Optional[List[str]] = None,
+) -> List[Dict[str, Any]]:
     """
     Stage 1: Collect individual responses from all council models.
 
@@ -17,8 +22,23 @@ async def stage1_collect_responses(user_query: str) -> List[Dict[str, Any]]:
     """
     messages = [{"role": "user", "content": user_query}]
 
-    # Query all models in parallel
-    responses = await query_models_parallel(COUNCIL_MODELS, messages)
+    models = council_models or COUNCIL_MODELS
+
+    if per_model_prompts:
+        tasks = []
+        for model in models:
+            prompt = per_model_prompts.get(model, user_query) if per_model_prompts else user_query
+            tasks.append(
+                query_model(
+                    model,
+                    [{"role": "user", "content": prompt}],
+                )
+            )
+        responses_list = await asyncio.gather(*tasks)
+        responses = {model: resp for model, resp in zip(models, responses_list)}
+    else:
+        # Query all models in parallel with the same prompt
+        responses = await query_models_parallel(models, messages)
 
     # Format results
     stage1_results = []
@@ -34,7 +54,8 @@ async def stage1_collect_responses(user_query: str) -> List[Dict[str, Any]]:
 
 async def stage2_collect_rankings(
     user_query: str,
-    stage1_results: List[Dict[str, Any]]
+    stage1_results: List[Dict[str, Any]],
+    council_models: Optional[List[str]] = None,
 ) -> Tuple[List[Dict[str, Any]], Dict[str, str]]:
     """
     Stage 2: Each model ranks the anonymized responses.
@@ -95,7 +116,8 @@ Now provide your evaluation and ranking:"""
     messages = [{"role": "user", "content": ranking_prompt}]
 
     # Get rankings from all council models in parallel
-    responses = await query_models_parallel(COUNCIL_MODELS, messages)
+    models = council_models or COUNCIL_MODELS
+    responses = await query_models_parallel(models, messages)
 
     # Format results
     stage2_results = []
@@ -115,7 +137,8 @@ Now provide your evaluation and ranking:"""
 async def stage3_synthesize_final(
     user_query: str,
     stage1_results: List[Dict[str, Any]],
-    stage2_results: List[Dict[str, Any]]
+    stage2_results: List[Dict[str, Any]],
+    chairman_model: str = CHAIRMAN_MODEL,
 ) -> Dict[str, Any]:
     """
     Stage 3: Chairman synthesizes final response.
@@ -159,17 +182,17 @@ Provide a clear, well-reasoned final answer that represents the council's collec
     messages = [{"role": "user", "content": chairman_prompt}]
 
     # Query the chairman model
-    response = await query_model(CHAIRMAN_MODEL, messages)
+    response = await query_model(chairman_model, messages)
 
     if response is None:
         # Fallback if chairman fails
         return {
-            "model": CHAIRMAN_MODEL,
+            "model": chairman_model,
             "response": "Error: Unable to generate final synthesis."
         }
 
     return {
-        "model": CHAIRMAN_MODEL,
+        "model": chairman_model,
         "response": response.get('content', '')
     }
 
@@ -293,7 +316,13 @@ Title:"""
     return title
 
 
-async def run_full_council(user_query: str) -> Tuple[List, List, Dict, Dict]:
+async def run_full_council(
+    user_query: str,
+    per_model_prompts: Optional[Dict[str, str]] = None,
+    mode: str = "baseline",
+    council_models: Optional[List[str]] = None,
+    chairman_model: str = CHAIRMAN_MODEL,
+) -> Tuple[List, List, Dict, Dict]:
     """
     Run the complete 3-stage council process.
 
@@ -303,33 +332,309 @@ async def run_full_council(user_query: str) -> Tuple[List, List, Dict, Dict]:
     Returns:
         Tuple of (stage1_results, stage2_results, stage3_result, metadata)
     """
-    # Stage 1: Collect individual responses
-    stage1_results = await stage1_collect_responses(user_query)
+    mode = (mode or "baseline").lower()
+    runner = MODE_RUNNERS.get(mode, run_mode_baseline)
+    return await runner(
+        user_query=user_query,
+        per_model_prompts=per_model_prompts,
+        council_models=council_models,
+        chairman_model=chairman_model,
+    )
 
-    # If no models responded successfully, return error
+
+# ---------------------------------------------------------------------------
+# Mode runners
+# ---------------------------------------------------------------------------
+
+
+async def run_mode_baseline(
+    user_query: str,
+    per_model_prompts: Optional[Dict[str, str]],
+    council_models: Optional[List[str]],
+    chairman_model: str,
+):
+    stage1_results = await stage1_collect_responses(user_query, per_model_prompts, council_models)
     if not stage1_results:
         return [], [], {
             "model": "error",
             "response": "All models failed to respond. Please try again."
-        }, {}
+        }, {"mode": "baseline"}
 
-    # Stage 2: Collect rankings
-    stage2_results, label_to_model = await stage2_collect_rankings(user_query, stage1_results)
-
-    # Calculate aggregate rankings
+    stage2_results, label_to_model = await stage2_collect_rankings(user_query, stage1_results, council_models)
     aggregate_rankings = calculate_aggregate_rankings(stage2_results, label_to_model)
 
-    # Stage 3: Synthesize final answer
     stage3_result = await stage3_synthesize_final(
         user_query,
         stage1_results,
-        stage2_results
+        stage2_results,
+        chairman_model=chairman_model,
     )
 
-    # Prepare metadata
     metadata = {
         "label_to_model": label_to_model,
-        "aggregate_rankings": aggregate_rankings
+        "aggregate_rankings": aggregate_rankings,
+        "mode": "baseline",
+    }
+    return stage1_results, stage2_results, stage3_result, metadata
+
+
+async def run_mode_round_robin(
+    user_query: str,
+    per_model_prompts: Optional[Dict[str, str]],
+    council_models: Optional[List[str]],
+    chairman_model: str,
+):
+    models = council_models or COUNCIL_MODELS
+    drafts: List[Dict[str, Any]] = []
+    prior_text = ""
+    for turn, model in enumerate(models, start=1):
+        base_prompt = per_model_prompts.get(model, user_query) if per_model_prompts else user_query
+        turn_prompt = (
+            f"Turn {turn}/{len(models)}. You see the latest draft below. Improve accuracy and clarity; keep useful detail. "
+            f"Original question: {user_query}\n\nLatest draft:\n{prior_text or '(none yet)'}"
+        )
+        messages = [{"role": "user", "content": f"{base_prompt}\n\n{turn_prompt}"}]
+        resp = await query_model(model, messages)
+        text = resp.get("content", "") if resp else ""
+        drafts.append({"model": model, "response": text, "role": f"draft_turn_{turn}"})
+        prior_text = text or prior_text
+
+    if not drafts:
+        return [], [], {"model": "error", "response": "Round Robin failed: no drafts produced."}, {"mode": "round_robin"}
+
+    chair_prompt = (
+        f"Final draft from round robin:\n{prior_text}\n\nOriginal question:\n{user_query}\n\n"
+        "Produce the final answer building on the latest draft; fix any errors and cite context if present."
+    )
+    chair_resp = await query_model(chairman_model, [{"role": "user", "content": chair_prompt}])
+    stage3_result = {
+        "model": chairman_model,
+        "response": chair_resp.get("content", "") if chair_resp else "No response from chairman."
     }
 
-    return stage1_results, stage2_results, stage3_result, metadata
+    metadata = {"mode": "round_robin", "steps": drafts}
+    return drafts, [], stage3_result, metadata
+
+
+async def run_mode_fight(
+    user_query: str,
+    per_model_prompts: Optional[Dict[str, str]],
+    council_models: Optional[List[str]],
+    chairman_model: str,
+):
+    models = council_models or COUNCIL_MODELS
+    prompt_map = per_model_prompts or {}
+
+    answers = await stage1_collect_responses(user_query, prompt_map, models)
+    answers = [{"model": a["model"], "response": a["response"], "role": "answer"} for a in answers]
+
+    critiques: List[Dict[str, Any]] = []
+    for ans in answers:
+        others = [a for a in answers if a["model"] != ans["model"]]
+        critique_prompt = (
+            f"Critique peers for question:\n{user_query}\n\nPeers:\n" +
+            "\n\n".join([f"{o['model']}:\n{o['response']}" for o in others])
+        )
+        resp = await query_model(ans["model"], [{"role": "user", "content": critique_prompt}])
+        critiques.append({
+            "model": ans["model"],
+            "response": resp.get("content", "") if resp else "",
+            "role": "critique",
+        })
+
+    defenses: List[Dict[str, Any]] = []
+    for ans in answers:
+        peer_crits = [c for c in critiques if c["model"] != ans["model"]]
+        defense_prompt = (
+            f"Defend your answer to: {user_query}\nYour answer:\n{ans['response']}\nPeer critiques:\n" +
+            "\n\n".join([f"{c['model']}:\n{c['response']}" for c in peer_crits])
+        )
+        resp = await query_model(ans["model"], [{"role": "user", "content": defense_prompt}])
+        defenses.append({
+            "model": ans["model"],
+            "response": resp.get("content", "") if resp else "",
+            "role": "defense",
+        })
+
+    chair_prompt = (
+        f"Debate on: {user_query}\n\nAnswers:\n" +
+        "\n\n".join([f"{a['model']}:\n{a['response']}" for a in answers]) +
+        "\n\nCritiques:\n" +
+        "\n\n".join([f"{c['model']}:\n{c['response']}" for c in critiques]) +
+        "\n\nDefenses:\n" +
+        "\n\n".join([f"{d['model']}:\n{d['response']}" for d in defenses]) +
+        "\n\nSummarize consensus, disagreements, and provide the best combined answer."
+    )
+    chair_resp = await query_model(chairman_model, [{"role": "user", "content": chair_prompt}])
+    stage3_result = {
+        "model": chairman_model,
+        "response": chair_resp.get("content", "") if chair_resp else "No response from chairman."
+    }
+
+    steps = answers + critiques + defenses
+    metadata = {"mode": "fight", "steps": steps}
+    return steps, [], stage3_result, metadata
+
+
+async def run_mode_stacks(
+    user_query: str,
+    per_model_prompts: Optional[Dict[str, str]],
+    council_models: Optional[List[str]],
+    chairman_model: str,
+):
+    models = council_models or COUNCIL_MODELS
+    if len(models) < 2:
+        return [], [], {"model": "error", "response": "Stacks requires at least two models."}, {"mode": "stacks"}
+
+    answers = await stage1_collect_responses(user_query, per_model_prompts, models[:2])
+    answers = [{"model": a["model"], "response": a["response"], "role": "stacks_answer"} for a in answers]
+
+    merge_prompt = (
+        f"Merge two answers while preserving optionality. Cite context if needed.\n\nA:\n{answers[0]['response']}\n\nB:\n{answers[1]['response']}"
+    )
+    merged = await query_model(chairman_model, [{"role": "user", "content": merge_prompt}])
+    merged_text = merged.get("content", "") if merged else ""
+    merged_step = {"model": chairman_model, "response": merged_text, "role": "stacks_merge"}
+
+    critics_models = models[2:] if len(models) > 2 else models[:2]
+    critiques: List[Dict[str, Any]] = []
+    for cm in critics_models:
+        critique_prompt = (
+            f"Critique the merged answer. Attack weak spots and missing context. Be concise.\n\nMerged:\n{merged_text}"
+        )
+        resp = await query_model(cm, [{"role": "user", "content": critique_prompt}])
+        critiques.append({"model": cm, "response": resp.get("content", "") if resp else "", "role": "stacks_critique"})
+
+    judge_prompt = (
+        f"Judge the merged answer vs critiques. Note what holds and fails.\nMerged:\n{merged_text}\n\nCritiques:\n" +
+        "\n\n".join([f"{c['model']}:\n{c['response']}" for c in critiques])
+    )
+    judge = await query_model(chairman_model, [{"role": "user", "content": judge_prompt}])
+    judge_text = judge.get("content", "") if judge else ""
+    judge_step = {"model": chairman_model, "response": judge_text, "role": "stacks_judge"}
+
+    defenses: List[Dict[str, Any]] = []
+    for ans in answers:
+        defense_prompt = (
+            f"Defend the merged answer vs critiques; fix valid issues briefly.\nMerged:\n{merged_text}\n\nCritiques:\n" +
+            "\n\n".join([f"{c['model']}:\n{c['response']}" for c in critiques])
+        )
+        resp = await query_model(ans["model"], [{"role": "user", "content": defense_prompt}])
+        defenses.append({"model": ans["model"], "response": resp.get("content", "") if resp else "", "role": "stacks_defense"})
+
+    final_prompt = (
+        f"Produce final report; present both sides; note judgment rationale.\nJudge:\n{judge_text}\n\nMerged:\n{merged_text}\n\nDefenses:\n" +
+        "\n\n".join([f"{d['model']}:\n{d['response']}" for d in defenses])
+    )
+    final_resp = await query_model(chairman_model, [{"role": "user", "content": final_prompt}])
+    final_text = final_resp.get("content", "") if final_resp else ""
+
+    steps = answers + [merged_step] + critiques + [judge_step] + defenses
+    metadata = {"mode": "stacks", "steps": steps}
+    return steps, [], {"model": chairman_model, "response": final_text}, metadata
+
+
+async def run_mode_complex_iterative(
+    user_query: str,
+    per_model_prompts: Optional[Dict[str, str]],
+    council_models: Optional[List[str]],
+    chairman_model: str,
+):
+    models = council_models or COUNCIL_MODELS
+    if len(models) < 2:
+        return [], [], {"model": "error", "response": "Complex Iterative needs at least two models."}, {"mode": "complex_iterative"}
+
+    extract_model = models[0]
+    expand_model = models[1]
+    steps: List[Dict[str, Any]] = []
+    summary = ""
+    suggested = ""
+    for hop in range(4):  # extract/expand twice
+        if hop % 2 == 0:
+            prompt = f"Extract: summarize intent and constraints; list key facts; propose the next prompt. Context:\n{user_query}\n\nPrior summary:\n{summary}\nPrior suggested:\n{suggested}"
+            resp = await query_model(extract_model, [{"role": "user", "content": prompt}])
+            text = resp.get("content", "") if resp else ""
+            steps.append({"model": extract_model, "response": text, "role": "extract"})
+            summary = text or summary
+        else:
+            prompt = f"Expand the prior extract; elaborate actionable detail and improve the suggested prompt.\nPrior summary:\n{summary}\nPrior suggested:\n{suggested}"
+            resp = await query_model(expand_model, [{"role": "user", "content": prompt}])
+            text = resp.get("content", "") if resp else ""
+            steps.append({"model": expand_model, "response": text, "role": "expand"})
+            suggested = text or suggested
+
+    final_prompt = f"Use the latest extract/expand chain to answer the original question.\nOriginal question:\n{user_query}\n\nLatest summary:\n{summary}\nLatest expansion:\n{suggested}"
+    final_resp = await query_model(chairman_model, [{"role": "user", "content": final_prompt}])
+    final_text = final_resp.get("content", "") if final_resp else ""
+    metadata = {"mode": "complex_iterative", "steps": steps}
+    return steps, [], {"model": chairman_model, "response": final_text}, metadata
+
+
+async def run_mode_complex_questioning(
+    user_query: str,
+    per_model_prompts: Optional[Dict[str, str]],
+    council_models: Optional[List[str]],
+    chairman_model: str,
+):
+    models = council_models or COUNCIL_MODELS
+    answers = await stage1_collect_responses(user_query, per_model_prompts, models)
+    answers = [{"model": a["model"], "response": a["response"], "role": "answer"} for a in answers]
+    if not answers:
+        return [], [], {"model": "error", "response": "Complex Questioning failed: no answers."}, {"mode": "complex_questioning"}
+
+    questions: List[Dict[str, Any]] = []
+    for ans in answers:
+        peers = [a for a in answers if a["model"] != ans["model"]]
+        question_prompt = (
+            f"Re-read your answer through peers' lenses. Identify where you may be wrong or overconfident. Update briefly.\nYour answer:\n{ans['response']}\nPeers:\n" +
+            "\n\n".join([f"{p['model']}:\n{p['response']}" for p in peers])
+        )
+        resp = await query_model(ans["model"], [{"role": "user", "content": question_prompt}])
+        questions.append({
+            "model": ans["model"],
+            "response": resp.get("content", "") if resp else "",
+            "role": "question_self",
+        })
+
+    brief_prompt = (
+        f"Summarize convergences/divergences and produce a concise brief.\nQuestion:\n{user_query}\n\nAnswers:\n" +
+        "\n\n".join([f"{a['model']}:\n{a['response']}" for a in answers]) +
+        "\n\nReflections:\n" +
+        "\n\n".join([f"{q['model']}:\n{q['response']}" for q in questions])
+    )
+    brief_resp = await query_model(chairman_model, [{"role": "user", "content": brief_prompt}])
+    brief_text = brief_resp.get("content", "") if brief_resp else ""
+    brief_step = {"model": chairman_model, "response": brief_text, "role": "brief"}
+
+    muses: List[Dict[str, Any]] = []
+    for ans in answers:
+        muse_prompt = (
+            f"Consider the brief alone (no original context). Add reflections or corrections; avoid inventing new facts.\nBrief:\n{brief_text}"
+        )
+        resp = await query_model(ans["model"], [{"role": "user", "content": muse_prompt}])
+        muses.append({
+            "model": ans["model"],
+            "response": resp.get("content", "") if resp else "",
+            "role": "muse",
+        })
+
+    final_prompt = (
+        f"Produce final answer based on debate and muse round; cite from earlier context if needed.\nBrief:\n{brief_text}\n\nMuse:\n" +
+        "\n\n".join([f"{m['model']}:\n{m['response']}" for m in muses])
+    )
+    final_resp = await query_model(chairman_model, [{"role": "user", "content": final_prompt}])
+    final_text = final_resp.get("content", "") if final_resp else ""
+
+    steps = answers + questions + muses + [brief_step]
+    metadata = {"mode": "complex_questioning", "steps": steps}
+    return steps, [], {"model": chairman_model, "response": final_text}, metadata
+
+
+MODE_RUNNERS: Dict[str, Callable[..., Any]] = {
+    "baseline": run_mode_baseline,
+    "round_robin": run_mode_round_robin,
+    "fight": run_mode_fight,
+    "stacks": run_mode_stacks,
+    "complex_iterative": run_mode_complex_iterative,
+    "complex_questioning": run_mode_complex_questioning,
+}

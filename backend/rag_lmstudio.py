@@ -7,6 +7,11 @@ from pathlib import Path
 from typing import Dict, List, Tuple, Any, Optional
 import math
 import httpx
+import subprocess
+import shutil
+import json
+import fnmatch
+import time
 
 from langchain_community.document_loaders import TextLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
@@ -22,6 +27,10 @@ from .config import (
     RETRIEVE_CANDIDATES,
     RERANK_TOP_K,
     CONTEXT_CHUNK_CAP,
+    INDEX_INCLUDE_GLOBS,
+    INDEX_EXCLUDE_GLOBS,
+    INDEX_INCLUDE_UNTRACKED,
+    INDEX_MANIFEST_PATH,
 )
 
 # ---------------------------------------------------------------------------
@@ -91,11 +100,104 @@ def index_repo_zip(zip_path: str, convo_id: str) -> str:
     with zipfile.ZipFile(zip_path, "r") as zf:
         zf.extractall(temp_dir)
 
+    return index_repo_dir(temp_dir, convo_id)
+
+
+def _load_manifest() -> Dict[str, Any]:
+    path = Path(INDEX_MANIFEST_PATH)
+    if not path.exists():
+        return {}
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def _save_manifest(manifest: Dict[str, Any]):
+    path = Path(INDEX_MANIFEST_PATH)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+
+
+def _matches_globs(path: str, patterns: List[str]) -> bool:
+    if not patterns:
+        return False
+    return any(fnmatch.fnmatch(path, pat) for pat in patterns)
+
+
+def _git_ls_tracked(root: Path) -> List[str]:
+    cmd = ["git", "ls-tree", "-r", "--name-only", "HEAD"]
+    try:
+        res = subprocess.run(cmd, cwd=root, check=True, capture_output=True, text=True)
+        return [line.strip() for line in res.stdout.splitlines() if line.strip()]
+    except Exception:
+        return []
+
+
+def _git_status_paths(root: Path) -> List[str]:
+    cmd = ["git", "status", "--porcelain"]
+    try:
+        res = subprocess.run(cmd, cwd=root, check=True, capture_output=True, text=True)
+        paths = []
+        for line in res.stdout.splitlines():
+            if len(line) < 4:
+                continue
+            path = line[3:].strip()
+            if path:
+                paths.append(path)
+        return paths
+    except Exception:
+        return []
+
+
+def build_worktree_snapshot(convo_id: str, repo_root: Path | None = None, include_untracked: bool | None = None) -> str:
+    """
+    Create a temp snapshot of the git working tree (with optional untracked files)
+    under temp_repos/{convo_id}.
+    """
+    root = repo_root or Path(".").resolve()
+    tracked = set(_git_ls_tracked(root))
+    include_untracked = INDEX_INCLUDE_UNTRACKED if include_untracked is None else include_untracked
+    status_paths = set(_git_status_paths(root)) if include_untracked else set()
+    candidates = tracked | status_paths
+
+    snapshot_dir = Path("temp_repos") / convo_id
+    if snapshot_dir.exists():
+        shutil.rmtree(snapshot_dir)
+    snapshot_dir.mkdir(parents=True, exist_ok=True)
+
+    copied = 0
+    for rel in sorted(candidates):
+        src = root / rel
+        if not src.is_file():
+            continue
+        rel_str = rel.replace("\\", "/")
+        if _matches_globs(rel_str, INDEX_EXCLUDE_GLOBS):
+            continue
+        if INDEX_INCLUDE_GLOBS and not _matches_globs(rel_str, INDEX_INCLUDE_GLOBS):
+            continue
+        if any(skip in src.parts for skip in SKIP_DIR_NAMES):
+            continue
+
+        dest = snapshot_dir / rel
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            shutil.copy2(src, dest)
+            copied += 1
+        except Exception:
+            continue
+
+    return f"Prepared git snapshot with {copied} files for {convo_id}."
+
+def index_repo_dir(root_dir: Path, convo_id: str) -> str:
+    """
+    Index an existing directory of files (already materialized under temp_repos/{convo_id}).
+    """
     docs: List[Document] = []
     skipped_large = 0
     skipped_load_fail = 0
 
-    for src in _iter_source_files(temp_dir):
+    for src in _iter_source_files(root_dir):
         # Skip huge files (just in case)
         if src.stat().st_size > 500_000:
             skipped_large += 1
@@ -105,7 +207,7 @@ def index_repo_zip(zip_path: str, convo_id: str) -> str:
             loader = TextLoader(str(src), encoding="utf-8", autodetect_encoding=True)
             raw_docs = loader.load()
             for d in raw_docs:
-                d.metadata["source"] = str(src.relative_to(temp_dir))
+                d.metadata["source"] = str(src.relative_to(root_dir))
             docs.extend(raw_docs)
         except Exception:
             # Best-effort: if a file blows up, we just skip it
@@ -113,7 +215,7 @@ def index_repo_zip(zip_path: str, convo_id: str) -> str:
             continue
 
     if not docs:
-        return "No suitable source files found in ZIP."
+        return "No suitable source files found to index."
 
     splitter = RecursiveCharacterTextSplitter(
         chunk_size=1000,
@@ -193,6 +295,30 @@ def index_repo_zip(zip_path: str, convo_id: str) -> str:
     data_dir.mkdir(parents=True, exist_ok=True)
     save_path = data_dir / f"{convo_id}_faiss"
     vectorstore.save_local(str(save_path))
+
+    # Manifest: record simple metadata for change detection
+    manifest = _load_manifest()
+    files_meta = []
+    for src in _iter_source_files(root_dir):
+        try:
+            stat = src.stat()
+            rel = str(src.relative_to(root_dir))
+            files_meta.append(
+                {
+                    "path": rel,
+                    "bytes": stat.st_size,
+                    "mtime": stat.st_mtime,
+                }
+            )
+        except Exception:
+            continue
+    manifest[convo_id] = {
+        "root": str(root_dir),
+        "file_count": len(files_meta),
+        "indexed_at": time.time(),
+        "files": files_meta,
+    }
+    _save_manifest(manifest)
 
     logger.info(
         (
@@ -498,8 +624,16 @@ def rank_paths_against_query(paths: List[Path], query: str) -> List[Tuple[Path, 
         return sorted([(p, 0.0) for p in paths], key=lambda x: len(str(x[0])))
 
 
-def get_context(convo_id: str, query: str, manual_items: Optional[List[Dict[str, Any]]] = None) -> Tuple[str, List[Dict[str, Any]]]:
+def get_context(
+    convo_id: str,
+    query: str,
+    manual_items: Optional[List[Dict[str, Any]]] = None,
+    allow_rag: bool = True,
+) -> Tuple[str, List[Dict[str, Any]]]:
     if manual_items:
         return build_manual_context(manual_items)
+
+    if not allow_rag:
+        return "", []
 
     return build_rag_context(convo_id, query)

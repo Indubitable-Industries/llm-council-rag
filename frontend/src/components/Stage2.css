@@ -48,6 +48,13 @@
   background: #ffffff;
   border-radius: 6px;
   border: 1px solid #d0e7ff;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.aggregate-item:hover {
+  background: #eef5ff;
+  border-color: #bcd6ff;
 }
 
 .rank-position {

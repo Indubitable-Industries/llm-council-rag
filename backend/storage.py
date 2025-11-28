@@ -18,7 +18,7 @@ def get_conversation_path(conversation_id: str) -> str:
     return os.path.join(DATA_DIR, f"{conversation_id}.json")
 
 
-def create_conversation(conversation_id: str) -> Dict[str, Any]:
+def create_conversation(conversation_id: str, mode: str = "baseline") -> Dict[str, Any]:
     """
     Create a new conversation.
 
@@ -34,7 +34,8 @@ def create_conversation(conversation_id: str) -> Dict[str, Any]:
         "id": conversation_id,
         "created_at": datetime.utcnow().isoformat(),
         "title": "New Conversation",
-        "messages": []
+        "messages": [],
+        "mode": mode,
     }
 
     # Save to file
@@ -98,7 +99,8 @@ def list_conversations() -> List[Dict[str, Any]]:
                     "id": data["id"],
                     "created_at": data["created_at"],
                     "title": data.get("title", "New Conversation"),
-                    "message_count": len(data["messages"])
+                    "message_count": len(data["messages"]),
+                    "mode": data.get("mode", "baseline"),
                 })
 
     # Sort by creation time, newest first
@@ -133,6 +135,7 @@ def add_assistant_message(
     stage2: List[Dict[str, Any]],
     stage3: Dict[str, Any],
     context_sources: Optional[List[Dict[str, Any]]] = None,
+    metadata: Optional[Dict[str, Any]] = None,
 ):
     """
     Add an assistant message with all 3 stages to a conversation.
@@ -153,6 +156,7 @@ def add_assistant_message(
         "stage2": stage2,
         "stage3": stage3,
         "context_sources": context_sources or [],
+        "metadata": metadata or {},
     })
 
     save_conversation(conversation)
@@ -171,4 +175,14 @@ def update_conversation_title(conversation_id: str, title: str):
         raise ValueError(f"Conversation {conversation_id} not found")
 
     conversation["title"] = title
+    save_conversation(conversation)
+
+
+def reset_conversation(conversation_id: str):
+    """Clear messages in a conversation but keep metadata."""
+    conversation = get_conversation(conversation_id)
+    if conversation is None:
+        raise ValueError(f"Conversation {conversation_id} not found")
+
+    conversation["messages"] = []
     save_conversation(conversation)

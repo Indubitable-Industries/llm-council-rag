@@ -9,6 +9,13 @@ This fork of Andrej Karpathy’s **llm-council** adds local RAG and repo ZIP upl
 - **Two-stage retrieval**: FAISS top-N → LM Studio reranker (BGE) narrows to top-K with neighbor chunk expansion and a configurable cap.
 - **Manual context**: file picker + @directives to force files/snippets; when manual context is supplied, RAG retrieval is skipped. Context metadata (scores, lines, tokens) is surfaced to the UI. A guidance blurb is added for RAG cases so models can flag missing context.
 - **UX niceties**: stop button, scroll-to-bottom, collapsible context panel, and a CLI (`python -m backend.cli_context`) to inspect what would be sent.
+
+## LM Studio setup
+- Run LM Studio with both models loaded:
+  - Embedder: `text-embedding-nomic-embed-text-v1.5`
+  - Reranker: `text-embedding-bge-reranker-large`
+- Endpoint shape: both use `/v1/embeddings`; rerank is client-side by cosine(query, doc) on reranker vectors (no `/v1/rerank`).
+- Configure host/port/models in `.env` (`LMSTUDIO_BASE_URL`, `LMSTUDIO_EMBED_MODEL`, `LMSTUDIO_RERANK_MODEL`).
 - **Frontend UX**: drag/drop ZIP with progress feedback; chat messages show which files were used for context.
 
 ## Environment variables

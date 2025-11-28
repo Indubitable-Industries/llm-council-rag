@@ -21,13 +21,13 @@ export const api = {
   /**
    * Create a new conversation.
    */
-  async createConversation() {
+  async createConversation(mode = 'baseline') {
     const response = await fetch(`${API_BASE}/api/conversations`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({}),
+      body: JSON.stringify({ mode }),
     });
     if (!response.ok) {
       throw new Error('Failed to create conversation');
@@ -185,6 +185,36 @@ export const api = {
     );
     if (!response.ok) {
       throw new Error('Failed to search repo');
+    }
+    return response.json();
+  },
+
+  async reindexGit(conversationId) {
+    const response = await fetch(`${API_BASE}/api/conversations/${conversationId}/reindex_git`, {
+      method: 'POST',
+    });
+    if (!response.ok) {
+      throw new Error('Failed to reindex from git');
+    }
+    return response.json();
+  },
+
+  async getSettings() {
+    const response = await fetch(`${API_BASE}/api/settings`);
+    if (!response.ok) {
+      throw new Error('Failed to load settings');
+    }
+    return response.json();
+  },
+
+  async updateSettings(payload) {
+    const response = await fetch(`${API_BASE}/api/settings`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (!response.ok) {
+      throw new Error('Failed to update settings');
     }
     return response.json();
   },

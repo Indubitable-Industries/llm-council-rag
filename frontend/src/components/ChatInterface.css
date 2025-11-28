@@ -4,12 +4,46 @@
   flex-direction: column;
   height: 100vh;
   background: #ffffff;
+  padding: 12px 24px 0 32px;
 }
 
 .messages-container {
   flex: 1;
   padding: 24px;
   overflow-y: auto;
+}
+.messages-container .error-banner {
+  padding: 12px 14px;
+  margin-bottom: 10px;
+  border: 1px solid #e19b9b;
+  border-radius: 8px;
+  background: #fff4f4;
+  color: #7a1f1f;
+  font-size: 14px;
+}
+
+.mode-badge {
+  align-self: flex-start;
+  margin: 0 24px 8px 24px;
+  padding: 6px 10px;
+  background: #e8f0fe;
+  border: 1px solid #4a90e2;
+  border-radius: 8px;
+  color: #1e3d7b;
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.repo-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0 24px 8px 24px;
+}
+
+.reindex-status {
+  font-size: 12px;
+  color: #555;
 }
 
 .empty-state {
@@ -232,6 +266,33 @@
   color: #555;
 }
 
+.directive-details {
+  margin-top: 6px;
+}
+
+.directive-details summary {
+  cursor: pointer;
+  color: #1e3d7b;
+  font-weight: 600;
+}
+
+.directive-list {
+  margin-top: 6px;
+  padding: 8px 10px;
+  background: #f1f5ff;
+  border: 1px solid #d3e2ff;
+  border-radius: 6px;
+  color: #2a3f6b;
+  font-size: 12px;
+  display: grid;
+  gap: 4px;
+}
+
+.directive-list code {
+  background: #e7edff;
+  padding: 2px 4px;
+  border-radius: 4px;
+}
 .context-toggle {
   border: 1px solid #999;
   background: #222;
@@ -285,14 +346,41 @@
   min-height: 100px;
 }
 
+.selected-context-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
 .selected-context-title {
   font-weight: 600;
-  margin-bottom: 6px;
+  margin: 0;
 }
 
 .selected-context-empty {
   color: #777;
   font-size: 13px;
+}
+
+.clear-selection {
+  border: 1px solid #999;
+  background: #f5f5f5;
+  color: #222;
+  border-radius: 6px;
+  padding: 4px 10px;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.clear-selection:hover:not(:disabled) {
+  background: #e8e8e8;
+}
+
+.clear-selection:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .selected-chip {

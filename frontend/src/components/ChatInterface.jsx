@@ -140,6 +140,59 @@ function RepoDropzone({ conversationId, onIndexed }) {
   );
 }
 
+const ContextPanel = memo(function ContextPanel({ sources }) {
+  if (!sources || sources.length === 0) return null;
+  const manual = sources.filter((s) => (s.source_type || '').startsWith('manual'));
+  const rag = sources.filter((s) => (s.source_type || '').startsWith('rag'));
+
+  const uniqueFiles = new Set((sources || []).map((s) => s.source)).size;
+  const lineTotal = (sources || []).reduce((sum, s) => sum + (s.lines || 0), 0);
+
+  const [collapsed, setCollapsed] = useState(true);
+
+  const renderSection = (label, items) => (
+    <div className="context-section">
+      <div className="context-section-title">{label}</div>
+      {items.map((item, idx) => {
+        const isFullFile = (item.source_type || '').startsWith('manual') && item.content && item.content.length > 0;
+        const showPreview = !isFullFile || (item.source_type || '').includes('snippet') || (item.source_type || '').startsWith('rag');
+        return (
+          <div className="context-row" key={`${item.source}-${idx}`}>
+            <div className="context-row-header">
+              <span className="context-tag">{label === 'Manual' ? 'Manual' : 'RAG'}</span>
+              <span className="context-path">{item.source}</span>
+              {item.score !== null && item.score !== undefined && (
+                <span className="context-score">score {item.score.toFixed(3)}</span>
+              )}
+              <span className="context-meta">{item.lines} lines · {item.est_tokens || 0} est tokens</span>
+            </div>
+            {showPreview ? (
+              <div className="context-preview">{item.content || ''}</div>
+            ) : (
+              <div className="context-preview muted">(Full file included; content hidden)</div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+
+  return (
+    <div className="context-panel">
+      <div className="context-header" onClick={() => setCollapsed((v) => !v)} role="button">
+        <div className="context-title">Context used · {uniqueFiles} files · {lineTotal} lines</div>
+        <div className="context-toggle-indicator">{collapsed ? 'Show' : 'Hide'}</div>
+      </div>
+      {!collapsed && (
+        <>
+          {manual.length > 0 && renderSection('Manual', manual)}
+          {rag.length > 0 && renderSection('RAG', rag)}
+        </>
+      )}
+    </div>
+  );
+}, (prev, next) => prev.sources === next.sources);
+
 export default function ChatInterface({
   conversation,
   onSendMessage,
@@ -154,6 +207,9 @@ export default function ChatInterface({
   const messagesEndRef = useRef(null);
   const messagesContainerRef = useRef(null);
   const [showScrollDown, setShowScrollDown] = useState(false);
+  const [reindexStatus, setReindexStatus] = useState('');
+  const [focusedModel, setFocusedModel] = useState(null);
+  const stage1Ref = useRef(null);
 
   const refreshRepoTree = () => {
     if (!conversation?.id) return;
@@ -161,6 +217,19 @@ export default function ChatInterface({
       .getRepoTree(conversation.id)
       .then((tree) => setRepoTree(tree))
       .catch((err) => console.error('Failed to load repo tree', err));
+  };
+
+  const handleReindexGit = async () => {
+    if (!conversation?.id) return;
+    try {
+      setReindexStatus('Reindexing…');
+      const resp = await api.reindexGit(conversation.id);
+      setReindexStatus(resp.message || 'Reindexed.');
+      refreshRepoTree();
+    } catch (err) {
+      console.error('Failed to reindex git', err);
+      setReindexStatus('Reindex failed');
+    }
   };
 
   const scrollToBottom = () => {
@@ -281,6 +350,7 @@ export default function ChatInterface({
     // Reset picker state on conversation change so prior repos don't linger visually.
     setRepoTree([]);
     setManualSelections([]);
+    setReindexStatus('');
     refreshRepoTree();
   }, [conversation?.id]);
 
@@ -298,6 +368,10 @@ export default function ChatInterface({
 
   const handleRemoveManual = (path) => {
     setManualSelections((prev) => prev.filter((p) => p.path !== path));
+  };
+
+  const handleClearManualSelections = () => {
+    setManualSelections((prev) => (prev.length ? [] : prev));
   };
 
   const renderRepoTree = (nodes) => {
@@ -325,59 +399,6 @@ export default function ChatInterface({
     });
   };
 
-  const ContextPanel = memo(({ sources }) => {
-    if (!sources || sources.length === 0) return null;
-    const manual = sources.filter((s) => (s.source_type || '').startsWith('manual'));
-    const rag = sources.filter((s) => (s.source_type || '').startsWith('rag'));
-
-    const uniqueFiles = new Set((sources || []).map((s) => s.source)).size;
-    const lineTotal = (sources || []).reduce((sum, s) => sum + (s.lines || 0), 0);
-
-    const [collapsed, setCollapsed] = useState(true);
-
-    const renderSection = (label, items) => (
-      <div className="context-section">
-        <div className="context-section-title">{label}</div>
-        {items.map((item, idx) => {
-          const isFullFile = (item.source_type || '').startsWith('manual') && item.content && item.content.length > 0;
-          const showPreview = !isFullFile || (item.source_type || '').includes('snippet') || (item.source_type || '').startsWith('rag');
-          return (
-            <div className="context-row" key={`${item.source}-${idx}`}>
-              <div className="context-row-header">
-                <span className="context-tag">{label === 'Manual' ? 'Manual' : 'RAG'}</span>
-                <span className="context-path">{item.source}</span>
-                {item.score !== null && item.score !== undefined && (
-                  <span className="context-score">score {item.score.toFixed(3)}</span>
-                )}
-                <span className="context-meta">{item.lines} lines · {item.est_tokens || 0} est tokens</span>
-              </div>
-              {showPreview ? (
-                <div className="context-preview">{item.content || ''}</div>
-              ) : (
-                <div className="context-preview muted">(Full file included; content hidden)</div>
-              )}
-            </div>
-          );
-        })}
-      </div>
-    );
-
-    return (
-      <div className="context-panel">
-        <div className="context-header" onClick={() => setCollapsed((v) => !v)} role="button">
-          <div className="context-title">Context used · {uniqueFiles} files · {lineTotal} lines</div>
-          <div className="context-toggle-indicator">{collapsed ? 'Show' : 'Hide'}</div>
-        </div>
-        {!collapsed && (
-          <>
-            {manual.length > 0 && renderSection('Manual', manual)}
-            {rag.length > 0 && renderSection('RAG', rag)}
-          </>
-        )}
-      </div>
-    );
-  }, (prev, next) => prev.sources === next.sources);
-
   if (!conversation) {
     return (
       <div className="chat-interface">
@@ -393,6 +414,14 @@ export default function ChatInterface({
     <div className="chat-interface">
       {/* New: repo dropzone for this conversation */}
       <RepoDropzone conversationId={conversation.id} onIndexed={refreshRepoTree} />
+      <div className="repo-actions">
+        <button type="button" className="context-toggle" onClick={handleReindexGit}>
+          Reindex from git
+        </button>
+        {reindexStatus && <span className="reindex-status">{reindexStatus}</span>}
+      </div>
+
+      <div className="mode-badge">Mode: {conversation.mode || 'baseline'}</div>
 
       <div className="context-tools">
         <div className="context-tools-header">
@@ -400,6 +429,19 @@ export default function ChatInterface({
             <div className="context-tools-title">Manual context</div>
             <div className="context-tools-subtitle">
               Click files to add, or use @file:path / @token in your message. Manual context skips auto-RAG.
+              <details className="directive-details">
+                <summary>More about @ commands</summary>
+                <div className="directive-list">
+                  <div><code>@norag</code> / <code>@raw</code>: disable auto-RAG (manual context only)</div>
+                  <div><code>@summarize</code>: force summarizer even if under budget</div>
+                  <div><code>@tokenbudget N</code>: cap total input tokens to ~N</div>
+                  <div><code>@short</code> / <code>@detailed</code>: length hint</div>
+                  <div><code>@cite</code>: ask for citations when context is used</div>
+                  <div><code>@noexecute</code>: no tool calls/side effects</div>
+                  <div><code>@reset</code>: clear conversation history (keep title)</div>
+                  <div><code>@temp X</code> (0-1) / <code>@maxtokens N</code>: override model params</div>
+                </div>
+              </details>
             </div>
           </div>
           <button className="context-toggle" onClick={() => setContextPanelOpen((v) => !v)}>
@@ -412,7 +454,17 @@ export default function ChatInterface({
               {renderRepoTree(repoTree)}
             </div>
             <div className="selected-context">
-              <div className="selected-context-title">Selected for next message</div>
+              <div className="selected-context-header">
+                <div className="selected-context-title">Selected for next message</div>
+                <button
+                  type="button"
+                  className="clear-selection"
+                  onClick={handleClearManualSelections}
+                  disabled={manualSelections.length === 0}
+                >
+                  Clear all
+                </button>
+              </div>
               {manualSelections.length === 0 && <div className="selected-context-empty">None yet</div>}
               {manualSelections.map((item) => (
                 <div className="selected-chip" key={item.path}>
@@ -456,7 +508,14 @@ export default function ChatInterface({
                       </span>
                     </div>
                   )}
-                  {msg.stage1 && <Stage1 responses={msg.stage1} />}
+                  {msg.stage1 && (
+                    <Stage1
+                      ref={stage1Ref}
+                      responses={msg.stage1}
+                      focusedModel={focusedModel}
+                      onActiveChange={setFocusedModel}
+                    />
+                  )}
 
                   {/* Stage 2 */}
                   {msg.loading?.stage2 && (
@@ -470,6 +529,10 @@ export default function ChatInterface({
                       rankings={msg.stage2}
                       labelToModel={msg.metadata?.label_to_model}
                       aggregateRankings={msg.metadata?.aggregate_rankings}
+                      onSelectModel={(model) => {
+                        setFocusedModel(model);
+                        stage1Ref.current?.scrollIntoView({ behavior: 'smooth' });
+                      }}
                     />
                   )}
 

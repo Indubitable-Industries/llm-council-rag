@@ -8,7 +8,8 @@ from .config import OPENROUTER_API_KEY, OPENROUTER_API_URL
 async def query_model(
     model: str,
     messages: List[Dict[str, str]],
-    timeout: float = 120.0
+    timeout: float = 120.0,
+    log_error: bool = True,
 ) -> Optional[Dict[str, Any]]:
     """
     Query a single model via OpenRouter API.
@@ -48,8 +49,18 @@ async def query_model(
                 'reasoning_details': message.get('reasoning_details')
             }
 
+    except httpx.HTTPStatusError as e:
+        body = ""
+        try:
+            body = e.response.text
+        except Exception:
+            body = "<unavailable>"
+        if log_error:
+            print(f"[openrouter] model={model} status={e.response.status_code} body={body[:500]}")
+        return None
     except Exception as e:
-        print(f"Error querying model {model}: {e}")
+        if log_error:
+            print(f"[openrouter] model={model} error={e}")
         return None
 
 

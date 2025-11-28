@@ -41,11 +41,11 @@ function App() {
     }
   };
 
-  const handleNewConversation = async () => {
+  const handleNewConversation = async (mode = 'baseline') => {
     try {
-      const newConv = await api.createConversation();
+      const newConv = await api.createConversation(mode);
       setConversations([
-        { id: newConv.id, created_at: newConv.created_at, message_count: 0 },
+        { id: newConv.id, created_at: newConv.created_at, message_count: 0, mode: newConv.mode },
         ...conversations,
       ]);
       setCurrentConversationId(newConv.id);

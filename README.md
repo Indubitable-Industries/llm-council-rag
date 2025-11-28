@@ -9,6 +9,8 @@ This fork adds a practical RAG workflow on top of the original council app:
 - **Context clarity:** High-contrast context panel (collapsible by default) with unique file/line summary, scores, and manual vs RAG tags.
 - **UX helpers:** Stop button to abort streaming, scroll-to-bottom shortcut, upload status that shows indexing, and a CLI to preview context (`python -m backend.cli_context ...`).
 
+See `RAG_LMSTUDIO.md` for the LM Studio setup, model choices, and RAG details.
+
 The idea of this repo is that instead of asking a question to your favorite LLM provider (e.g. OpenAI GPT 5.1, Google Gemini 3.0 Pro, Anthropic Claude Sonnet 4.5, xAI Grok 4, eg.c), you can group them into your "LLM Council". This repo is a simple, local web app that essentially looks like ChatGPT except it uses OpenRouter to send your query to multiple LLMs, it then asks them to review and rank each other's work, and finally a Chairman LLM produces the final response.
 
 In a bit more detail, here is what happens when you submit a query:
